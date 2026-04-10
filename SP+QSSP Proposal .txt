@@ -1,0 +1,121 @@
+**Quantum-Resistant Silent Payments (QSSP):**  
+**Porting the Hash-Puzzle Mechanism from Quantum Safe Bitcoin (QSB) to BIP 352-Style Non-Interactive Private Payments**
+
+**Proposal Author:**  
+James Squire  
+
+**Date:**  
+10 April 2026  
+
+**Version:**  
+1.0  
+
+---
+
+### Abstract
+
+Silent Payments (BIP 352) provide an elegant, non-interactive, privacy-preserving payment scheme based on Diffie-Hellman key exchange symmetry on the elliptic curve. The “romantic” halfway meeting—where sender and receiver independently derive the identical tweak using an `outpoint_hash`—enables reusable scan keys without address reuse or on-chain interaction.
+
+The Quantum Safe Bitcoin (QSB) proposal, released on 9 April 2026 by Avihu Levy (StarkWare), introduces a fully quantum-resistant spending mechanism that operates entirely within legacy Bitcoin Script. Security is shifted from elliptic-curve discrete-logarithm assumptions (vulnerable to Shor’s algorithm) to RIPEMD-160 pre-image resistance via a novel hash-to-signature puzzle.
+
+This merged proposal presents a direct, low-overhead integration of the two ideas: **PQ Silent Payments (QSSP)**. By replacing elliptic-curve derivation with a pure hash-based tweak derived from the same `outpoint_hash` and a static scan base **S**, we preserve the exact non-interactive symmetry of Silent Payments while making the entire payment flow quantum-resistant today. No consensus changes, no new opcodes, and no extra on-chain cost beyond standard QSB scripts are required. The result is a practical, immediately deployable path to private, post-quantum one-way payments on Bitcoin.
+
+---
+
+### 1. Background
+
+#### 1.1 Silent Payments (BIP 352)
+Silent Payments achieve non-interactive, private payments through a symmetric Diffie-Hellman construction:
+
+- Sender (Alice, private scalar `a`) and receiver (Bob, private scalar `b`) compute the same tweak because \( a \cdot B = b \cdot A \).
+- An `outpoint_hash = \operatorname{hash}(\text{txid} || \text{vout})` ensures uniqueness per input and prevents scan collisions.
+- The receiver publishes a single static scan public key; the sender derives a unique, one-time output scriptPubKey.
+
+This design is widely praised for its elegance. The “romantic” halfway meeting—where both parties independently derive the identical tweak using only public information plus the outpoint hash—makes reusable scan keys possible without address reuse or any on-chain interaction.
+
+#### 1.2 Quantum Safe Bitcoin (QSB)
+QSB makes UTXO spending quantum-resistant without protocol upgrades:
+
+- The spender solves a **hash puzzle** (~2⁴⁶ GPU work) to find a `key_nonce` such that \( h = \operatorname{RIPEMD160}(\text{key_nonce}) \) is a structurally valid DER-encoded ECDSA signature.
+- The locking script performs two `OP_CHECKSIGVERIFY` operations (one binding the transaction via a hardcoded `sig_nonce`, one verifying the puzzle) plus Lamport/HORS dummy signatures and double-digest transaction binding.
+- Security rests solely on hash pre-image resistance (Grover’s algorithm yields only quadratic speedup, preserving ~118-bit classical security).
+- Fully compatible with legacy Script; verification is cheap and deterministic.
+
+QSB focuses on quantum-safe *spending* of existing UTXOs and uses a Lamport/HORS public key set plus puzzle seed as its address format.
+
+---
+
+### 2. Problem Statement
+
+Current Silent Payments rely on elliptic-curve cryptography, which will be broken by large-scale quantum computers. While QSB provides an immediate quantum-safe spending primitive, it does not natively support non-interactive private address derivation or reusable scan keys.
+
+A naive combination would lose the privacy and usability advantages of Silent Payments. The challenge is to **preserve the exact non-interactive “halfway meeting” symmetry** while migrating the derivation and security model entirely to hash-based primitives.
+
+---
+
+### 3. Research Objectives
+
+1. Design a hash-based analogue of the Silent Payments tweak that maintains perfect sender-receiver symmetry.  
+2. Integrate QSB’s hash puzzle into the derived output scriptPubKey so that both payment creation and future spending remain quantum-resistant.  
+3. Ensure zero protocol changes and full backward compatibility with plain QSB.  
+4. Quantify efficiency, privacy, and security of the combined construction.  
+5. Produce reference implementation, security analysis, and deployment guidance for immediate community evaluation.
+
+---
+
+### 4. Proposed Approach
+
+#### 4.1 Core Construction (PQ Silent Payments)
+
+The receiver publishes a single static **scan base S** (a Lamport/HORS public key set plus a puzzle seed—effectively a reusable QSB address).
+
+**Sender workflow (Alice):**  
+1. Compute `outpoint_hash = hash(txid || vout)` of the funding input (exactly as in BIP 352).  
+2. Derive instance-specific parameters (mirroring the BIP 352 formula as closely as possible):  
+   \[
+   \text{puzzle\_tweak} = \operatorname{hash}(\text{outpoint\_hash} || S || 0)
+   \]  
+   \[
+   \text{derived\_sig\_nonce} = \text{puzzle\_tweak}[0:32] \quad \text{(interpreted as the hardcoded (r,s) pair or hashed into it)}
+   \]  
+   \[
+   \text{derived\_lamport\_base} = \operatorname{expand}(\text{puzzle\_tweak}) \quad \text{(HKDF-style or simple hash-to-seed derivation from master S)}
+   \]  
+3. Build the QSB locking script using the derived parameters.  
+4. Solve the hash puzzle *for this exact derived instance* (still ~2⁴⁶ GPU work—the sender pays the cost).  
+5. Output the payment to that derived scriptPubKey.
+
+**Receiver workflow (Bob):**  
+- For every transaction input outpoint on the chain, recompute the exact same `puzzle_tweak`, `derived_sig_nonce`, and `derived_lamport_base` using their secret master preimages of **S**.  
+- Check if any output scriptPubKey matches the derived QSB script.  
+- If a match is found, the coins belong to them. They can later spend by deriving the matching Lamport preimages (from the master) plus solving their own puzzle when moving the funds.
+
+#### 4.2 Why the “Romantic” Halfway Meeting Survives Perfectly
+
+- **True symmetry**: Both parties compute the identical `puzzle_tweak` and derived parameters independently using only the public **S** + `outpoint_hash`. No interaction, no unique address per payment, full scan-only privacy (exactly like BIP 352).  
+- **Outpoint_hash role**: Guarantees uniqueness per input, prevents scan collisions, and ties everything to the funding transaction.  
+- **Full post-quantum security**: Everything is hash-based. No elliptic curves remain in the derivation or security assumption.  
+- **No extra on-chain cost**: The tweak is pure hash (negligible). Sender still performs the one-time GPU puzzle solve; verifier runs normal script execution.  
+- **Backward compatibility**: If silent mode is not desired, the full derived parameters can be published directly as a plain QSB address.
+
+---
+
+### 5. Benefits and Efficiency
+
+- **Privacy**: Reusable scan base, one-time derived outputs, no address reuse.  
+- **Quantum resistance**: Inherited directly from QSB (RIPEMD-160 pre-image hardness).  
+- **Deployability**: Works today on mainnet with existing Script—no soft forks required.  
+- **Cost**: Sender bears the ~2⁴⁶ GPU work (~$75–150 on cloud GPUs); receiver scanning and verification remain lightweight.
+
+The only practical difference from classic Silent Payments is that key derivation is now a hash expansion instead of an elliptic tweak—precisely what delivers quantum safety while preserving the elegant non-interactive symmetry.
+
+---
+
+### 6. Next Steps
+
+- Complete reference implementation (wallet integration for scanning, payment creation, and spending).  
+- Full security analysis (collision resistance, binding properties, related-key attacks, anonymity-set impact).  
+- On-chain size and cost benchmarks versus plain Silent Payments and plain QSB.  
+- Community review and testnet deployment guidance.
+
+This construction embodies Bitcoin’s best tradition: powerful new capabilities built from existing primitives through ingenuity rather than protocol upheaval. It offers an immediately usable path to private, post-quantum payments that can be adopted by any wallet supporting QSB scripts.
