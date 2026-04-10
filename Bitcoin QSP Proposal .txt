@@ -1,0 +1,74 @@
+**Quantum-Resistant Silent Payments (QSSP):**  
+**Porting the Hash-Puzzle Mechanism from Quantum Safe Bitcoin (QSB) to BIP 352-Style Non-Interactive Private Payments**
+
+**Proposal Author:**  
+James Squire (with contributions from Grok analysis)
+
+**Date:**  
+10 April 2026
+
+**Version:**  
+1.1
+
+---
+
+### Abstract
+
+Silent Payments (BIP 352) enable elegant non-interactive private payments. Quantum Safe Bitcoin (QSB) delivers immediate quantum-resistant spending using RIPEMD-160 hash puzzles within legacy Script.
+
+**QSSP** merges the two: a fully hash-based, quantum-resistant analogue of Silent Payments that preserves the exact “romantic halfway meeting” symmetry. No consensus changes, no new opcodes, minimal overhead. Works today on mainnet.
+
+---
+
+### 1. Background
+
+#### 1.1 Silent Payments (BIP 352)
+Sender and receiver independently derive the same tweak using `outpoint_hash` and public keys, enabling reusable scan keys.
+
+#### 1.2 Quantum Safe Bitcoin (QSB)
+Spending security rests on RIPEMD-160 pre-image resistance via a ~2⁴⁶ GPU hash puzzle. Uses Lamport/HORS dummy signatures + two `OP_CHECKSIGVERIFY` operations.
+
+---
+
+### 2. QSSP Specification
+
+#### 2.1 Address Format (Scan Base S)
+A receiver publishes a single static **QSSP scan base** encoded as:
+
+`qsbsp1` + bech32m(data) where data = `master_puzzle_seed (32 bytes) || lamport_master_pubkey_set (compressed format)`
+
+#### 2.2 Core Derivation (Exact Algorithms)
+
+**Constants:**
+- `HASH = SHA256`
+- `HASHd = SHA256(SHA256(.))` (double SHA256, matching Bitcoin conventions)
+- `INFO_STRING = b"QSSP v1.1 tweak derivation"`
+
+**Sender & Receiver (identical computation):**
+
+```python
+def derive_qsb_parameters(outpoint_hash: bytes, S: bytes) -> dict:
+    """
+    outpoint_hash: 32-byte hash(txid || vout)
+    S: scan base (master_puzzle_seed || lamport_master_pubkey_set)
+    """
+    puzzle_tweak = HASH(outpoint_hash + S + b'\x00')
+    
+    # Derived sig_nonce for hardcoded signature binding
+    derived_sig_nonce = puzzle_tweak[:32]          # 32 bytes for (r,s) derivation
+    
+    # Expand to Lamport/HORS base using HKDF-style derivation
+    derived_lamport_seed = HKDF_SHA256(
+        ikm=puzzle_tweak,
+        salt=S[:32],                     # master_puzzle_seed portion
+        info=INFO_STRING,
+        length=64
+    )
+    
+    derived_lamport_base = expand_to_lamport_pubkeys(derived_lamport_seed)
+    
+    return {
+        "puzzle_tweak": puzzle_tweak,
+        "sig_nonce": derived_sig_nonce,
+        "lamport_base": derived_lamport_base
+    }
